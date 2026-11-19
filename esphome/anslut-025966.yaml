@@ -1,0 +1,139 @@
+# ESPHome config for the Anslut 025966 dehumidifier (Jula), OEM model OL12-BD023B.
+# Talks to the unit's main board through its unused "WIFI" connector (Tuya MCU protocol).
+# See README.md for wiring and installation.
+
+substitutions:
+  name: anslut-dehumidifier
+  friendly_name: Dehumidifier
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev   # ESP32 DevKitC / WROOM-32. Change for other boards.
+
+logger:
+  level: INFO       # Set to DEBUG to see every Tuya datapoint in the log.
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap: {}            # Fallback hotspot if Wi-Fi is unreachable.
+
+captive_portal:
+
+# Wi-Fi connector pin 1 (main board TX) -> level shifter -> GPIO17
+# Wi-Fi connector pin 2 (main board RX) <- level shifter <- GPIO16
+uart:
+  id: tuya_uart
+  rx_pin: GPIO17
+  tx_pin: GPIO16
+  baud_rate: 9600
+
+tuya:
+
+switch:
+  - platform: tuya
+    name: "Power"
+    switch_datapoint: 1
+    icon: mdi:power
+  - platform: tuya
+    name: "Child lock"
+    switch_datapoint: 16
+    icon: mdi:lock
+    entity_category: config
+
+# The unit only uses the target humidity in Auto mode.
+# Changing it from Home Assistant therefore switches the unit to Auto first.
+number:
+  - platform: tuya
+    id: target_humidity_raw
+    internal: true
+    number_datapoint: 2
+    min_value: 30
+    max_value: 80
+    step: 5
+    on_value:
+      - lambda: id(target_humidity).publish_state(x);
+  - platform: template
+    id: target_humidity
+    name: "Target humidity"
+    min_value: 30
+    max_value: 80
+    step: 5
+    unit_of_measurement: "%"
+    device_class: humidity
+    set_action:
+      - select.set:
+          id: mode_select
+          option: "Auto"
+      - delay: 300ms
+      - number.set:
+          id: target_humidity_raw
+          value: !lambda return x;
+
+select:
+  - platform: tuya
+    id: mode_select
+    name: "Mode"
+    enum_datapoint: 5
+    options:
+      0: "Drying mode"   # continuous dehumidifying
+      1: "Auto"          # follows the target humidity
+      2: "Night"         # night reduction, forces low fan speed
+  - platform: tuya
+    name: "Fan speed"
+    enum_datapoint: 4
+    options:
+      0: "Low"
+      1: "High"
+
+sensor:
+  - platform: tuya
+    name: "Humidity"
+    sensor_datapoint: 6
+    unit_of_measurement: "%"
+    device_class: humidity
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: tuya
+    name: "Temperature"
+    sensor_datapoint: 7
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: tuya
+    id: fault_code
+    name: "Fault code"
+    sensor_datapoint: 19
+    entity_category: diagnostic
+  - platform: wifi_signal
+    name: "WiFi signal"
+    entity_category: diagnostic
+  - platform: uptime
+    name: "Uptime"
+    entity_category: diagnostic
+
+binary_sensor:
+  - platform: template
+    name: "Water tank full"
+    device_class: problem
+    icon: mdi:cup-water
+    lambda: |-
+      if (isnan(id(fault_code).state)) return false;
+      return ((int) id(fault_code).state & 0x01) != 0;
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: config
